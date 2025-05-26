@@ -235,11 +235,11 @@
          unused_1 = ?NIL,
          % consumers need to reflect consumer state at time of snapshot
          consumers = #{} :: #{consumer_key() => consumer()},
-         %% TODO should only be used for filtering enabled queues.
+         %% Only used for filtering enabled queues.
          %% All active consumers including consumers that may be down or may contain 0 credits.
-         %% An auxiliary data structure used as the base service queue after a new message has
-         %% been enqueued.
-         consumers_q = priority_queue:new() :: priority_queue:q(),
+         %% An auxiliary data structure used as the base service queue after a message has
+         %% been enqueued or requeued.
+         consumers_queue = priority_queue:new() :: priority_queue:q(),
          % consumers that require further service are queued here
          service_queue = priority_queue:new() :: priority_queue:q(),
          %% state for at-least-once dead-lettering
