@@ -44,7 +44,8 @@ groups() ->
        %% property filter expressions
        property_message_groups_attach_empty_queue,
        property_message_groups_attach_non_empty_queue,
-       property_message_groups_round_robin,
+       property_message_groups_dispatch_1,
+       property_message_groups_dispatch_2,
        property_message_groups_requeue,
        property_message_groups_same_filter,
        property_ttl,
@@ -269,7 +270,7 @@ property_message_groups_attach_non_empty_queue(Config) ->
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
     ok = close(Init).
 
-property_message_groups_round_robin(Config) ->
+property_message_groups_dispatch_1(Config) ->
     QName = atom_to_binary(?FUNCTION_NAME),
     Address = rabbitmq_amqp_address:queue(QName),
 
@@ -294,53 +295,90 @@ property_message_groups_round_robin(Config) ->
                         Session, <<"receiver 3">>, Address,
                         settled, none, FilterRed),
 
-    ok = amqp10_client:flow_link_credit(Receiver1, 10, never),
-    ok = amqp10_client:flow_link_credit(Receiver2, 10, never),
-    ok = amqp10_client:flow_link_credit(Receiver3, 10, never),
+    NumMsgs = 20,
+    ok = amqp10_client:flow_link_credit(Receiver1, NumMsgs, never),
+    ok = amqp10_client:flow_link_credit(Receiver2, NumMsgs, never),
+    ok = amqp10_client:flow_link_credit(Receiver3, NumMsgs, never),
 
     {ok, Sender} = amqp10_client:attach_sender_link(Session, <<"sender">>, Address),
     ok = wait_for_credit(Sender),
     flush(sender_credited),
-    ok = amqp10_client:send_msg(
-           Sender, amqp10_msg:set_properties(
-                     #{group_id => <<"red">>},
-                     amqp10_msg:new(<<"t1">>, <<"m1">>))),
-    ok = amqp10_client:send_msg(
-           Sender, amqp10_msg:set_properties(
-                     #{group_id => <<"red">>},
-                     amqp10_msg:new(<<"t2">>, <<"m2">>))),
-    ok = amqp10_client:send_msg(
-           Sender, amqp10_msg:set_properties(
-                     #{group_id => <<"red">>},
-                     amqp10_msg:new(<<"t3">>, <<"m3">>))),
-    ok = wait_for_accepts(3),
 
-    ReceiverMsg1 = receive {amqp10_msg, RecM1, M1} ->
-                               ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1)),
-                               RecM1
-                   after 5000 -> ct:fail({missing_msg, ?LINE})
-                   end,
-    ReceiverMsg2 = receive {amqp10_msg, RecM2, M2} ->
-                               ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2)),
-                               RecM2
-                   after 5000 -> ct:fail({missing_msg, ?LINE})
-                   end,
-    ReceiverMsg3 = receive {amqp10_msg, RecM3, M3} ->
-                               ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3)),
-                               RecM3
-                   after 5000 -> ct:fail({missing_msg, ?LINE})
-                   end,
+    [begin
+         Bin = integer_to_binary(N),
+         ok = amqp10_client:send_msg(
+                Sender, amqp10_msg:set_properties(
+                          #{group_id => <<"red">>},
+                          amqp10_msg:new(Bin, Bin)))
+     end || N <- lists:seq(1, NumMsgs)],
+    ok = wait_for_accepts(NumMsgs),
 
-    %% We assert that RabbitMQ delivered the three red messages round robin.
-    %% However, we don't care which receiver received first.
-    ?assertEqual(lists:usort([Receiver1, Receiver2, Receiver3]),
-                 lists:usort([ReceiverMsg1, ReceiverMsg2, ReceiverMsg3])),
+    %% We expect that all receivers received some messages.
+    MsgsByReceivers = receive_messages(NumMsgs),
+    ct:pal("received messages: ~p", [MsgsByReceivers]),
+    ?assertEqual(3, maps:size(MsgsByReceivers)),
 
     ok = detach_link_sync(Sender),
     ok = detach_link_sync(Receiver1),
     ok = detach_link_sync(Receiver2),
     ok = detach_link_sync(Receiver3),
     ?assertMatch({ok, #{message_count := 0}},
+                 rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
+    ok = close(Init).
+
+property_message_groups_dispatch_2(Config) ->
+    QName = atom_to_binary(?FUNCTION_NAME),
+    Address = rabbitmq_amqp_address:queue(QName),
+
+    {_, Session, LinkPair} = Init = init(Config),
+    {ok, #{}} = rabbitmq_amqp_client:declare_queue(
+                  LinkPair,
+                  QName,
+                  #{arguments => #{<<"x-queue-type">> => {utf8, <<"quorum">>},
+                                   <<"x-filter-enabled">> => true,
+                                   <<"x-filter-field-names">> => {list, [{symbol, <<"group-id">>}]}
+                                  }}),
+
+    FilterRed = #{?DESCRIPTOR_NAME_PROPERTIES_FILTER =>
+                  {map, [{{symbol, <<"group-id">>}, {utf8, <<"red">>}}]}},
+    {ok, Receiver1} = amqp10_client:attach_receiver_link(
+                        Session, <<"receiver 1">>, Address,
+                        settled, none, FilterRed),
+    {ok, Receiver2} = amqp10_client:attach_receiver_link(
+                        Session, <<"receiver 2">>, Address,
+                        settled, none, FilterRed),
+
+    NumMsgs = 100,
+    ok = amqp10_client:flow_link_credit(Receiver1, NumMsgs, never),
+    ok = amqp10_client:flow_link_credit(Receiver2, NumMsgs, never),
+
+    {ok, Sender} = amqp10_client:attach_sender_link(Session, <<"sender">>, Address),
+    ok = wait_for_credit(Sender),
+    flush(sender_credited),
+
+    [begin
+         GroupId = case N rem 2 of
+                       0 -> <<"green">>;
+                       1 -> <<"red">>
+                   end,
+         Bin = integer_to_binary(N),
+         ok = amqp10_client:send_msg(
+                Sender, amqp10_msg:set_properties(
+                          #{group_id => GroupId},
+                          amqp10_msg:new(Bin, Bin)))
+     end || N <- lists:seq(1, NumMsgs)],
+    ok = wait_for_accepts(NumMsgs),
+
+    %% We expect that both receivers received some red messages.
+    NumRedMsgs = NumGreenMsgs = NumMsgs div 2,
+    MsgsByReceivers = receive_messages(NumRedMsgs),
+    ct:pal("received messages: ~p", [MsgsByReceivers]),
+    ?assertEqual(2, maps:size(MsgsByReceivers)),
+
+    ok = detach_link_sync(Sender),
+    ok = detach_link_sync(Receiver1),
+    ok = detach_link_sync(Receiver2),
+    ?assertMatch({ok, #{message_count := NumGreenMsgs}},
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
     ok = close(Init).
 
@@ -1508,6 +1546,20 @@ assert_no_msg_received(Line) ->
 assert_credit_exhausted(Receiver, Line) ->
     receive {amqp10_event, {link, Receiver, credit_exhausted}} -> ok
     after 9000 -> ct:fail({missing_credit_exhausted, Line})
+    end.
+
+receive_messages(N) ->
+    receive_messages0(N, #{}).
+
+receive_messages0(0, Acc) ->
+    Acc;
+receive_messages0(N, Acc0) ->
+    receive
+        {amqp10_msg, Receiver, _Msg} ->
+            Acc = maps:update_with(Receiver, fun(Val) -> Val + 1 end, 1, Acc0),
+            receive_messages0(N - 1, Acc)
+    after 30_000  ->
+              ct:fail({timeout, {num_missing, N}})
     end.
 
 property_field_names() ->

@@ -1687,7 +1687,7 @@ apply_enqueue(#{index := RaftIdx,
     case maybe_enqueue(RaftIdx, Ts, From, Seq, RawMsg,
                        Size, MsgMeta, Effects0, State0) of
         {ok, State1, Effects1} ->
-            State = queue_filtering_consumers(State1),
+            State = queue_filtering_consumers(Meta, State1),
             checkout(Meta, State0, State, Effects1);
         {out_of_sequence, State, Effects} ->
             {State, not_enqueued, Effects};
@@ -1700,21 +1700,40 @@ apply_enqueue(#{index := RaftIdx,
 %%
 %% This must be fast because it's called after each enqueue.
 %% Specifically, the following should all be avoided:
-%% * priority_queue:member/2
-%% * map insertion or deletion
+%% * map insertions or deletions
 %% * building a new list of consumers
+%% * expensive priority_queue:member/2 calls
 %%
 %% Therefore, we simply add all active consumers here. During checkout,
 %% any consumers that are down or have 0 credits will be removed anyway.
-queue_filtering_consumers(#?STATE{cfg = #cfg{filter_enabled = true},
-                                  consumers_q = ConsQ} = State) ->
+queue_filtering_consumers(Meta, #?STATE{cfg = #cfg{filter_enabled = true},
+                                        consumers_q = ConsQ,
+                                        msg_bytes_enqueue = BytesEnq} = State) ->
+    #{system_time := Ts,
+      index := Idx} = Meta,
+    %% Rotating helps dispatching messages across multiple consumers.
+    %% Note however that this doesn't guarantee round robin.
+    %% We add some randomness as to whether we rotate to break certain patterns
+    %% where the same consumers would get all messages assigned.
+    %% Example: Empty queue with two consumers 1 and 2 both filtering only group A
+    %% and both having granted lots of credits.
+    %% New messages are enqueued in the following order for the following groups:
+    %% A, B, A, B, and so on...
+    %% Without randomness consumer 1 will get all the messages while consumer 2
+    %% won't get a single message.
+    %%
+    %% We could use module `rand` initialised with the same seed and algorithm
+    %% on all QQ members. However, there are still minor risks of non-determinism
+    %% across OTP versions. We also don't need good statistical properties.
+    %% Therefore, the following sources of randomness should be good enough.
+    ShouldRotate = (Ts + Idx + BytesEnq) rem 5 =/= 0,
+    ConsumersQ = case ShouldRotate of
+                     true -> priority_queue:rotate(ConsQ);
+                     false -> ConsQ
+                 end,
     State#?STATE{service_queue = ConsQ,
-                 %% Rotating should help dispatching messages across multiple consumers.
-                 %% Note however that this doesn't guarantee round robin.
-                 %% TODO We might need some randomness whether we rotate to avoid
-                 %% certain patterns where always the same consumer gets messages assigned.
-                 consumers_q = priority_queue:rotate(ConsQ)};
-queue_filtering_consumers(State) ->
+                 consumers_q = ConsumersQ};
+queue_filtering_consumers(_Meta, State) ->
     State.
 
 decr_total(#?STATE{messages_total = Tot} = State) ->
@@ -1885,7 +1904,7 @@ return(#{} = Meta, ConsumerKey, MsgIds, IncrDelCount, Anns,
                  _ ->
                      State1
              end,
-    State3 = queue_filtering_consumers(State2),
+    State3 = queue_filtering_consumers(Meta, State2),
     checkout(Meta, State0, State3, Effects1).
 
 % used to process messages that are finished
@@ -2072,7 +2091,7 @@ return_all(Meta, #?STATE{consumers = Cons} = State0, Effects0, ConsumerKey,
                                   return_one(Meta, MsgId, Msg, DelivFailed, #{},
                                              S, E, ConsumerKey)
                           end, {State1, Effects0}, lists:sort(maps:to_list(Checked))),
-    State = queue_filtering_consumers(State2),
+    State = queue_filtering_consumers(Meta, State2),
     {State, Effects}.
 
 checkout(Meta, OldState, State0, Effects0) ->
