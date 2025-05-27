@@ -3,9 +3,6 @@
 -compile(nowarn_export_all).
 -compile(export_all).
 
--export([
-         ]).
-
 -include_lib("proper/include/proper.hrl").
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -87,7 +84,8 @@ all_tests() ->
      dlx_07,
      dlx_08,
      dlx_09,
-     single_active_ordering_02
+     single_active_ordering_02,
+     different_nodes
     ].
 
 groups() ->
@@ -1095,6 +1093,40 @@ single_active_ordering_03(_Config) ->
             false
     end.
 
+different_nodes(Config) ->
+    Config1 = rabbit_ct_helpers:set_config(Config, [{rmq_nodes_count, 2}]),
+    Config2 = rabbit_ct_helpers:run_setup_steps(
+                Config1,
+                rabbit_ct_broker_helpers:setup_steps() ++
+                rabbit_ct_client_helpers:setup_steps()),
+
+    Size = 256,
+    run_proper(
+      fun () ->
+              ?FORALL({Length, Bytes, DeliveryLimit, SingleActive},
+                      frequency([{5, {undefined, undefined, undefined, false}},
+                                 {5, {oneof([range(1, 10), undefined]),
+                                      oneof([range(1, 1000), undefined]),
+                                      oneof([range(1, 3), undefined]),
+                                      oneof([true, false])
+                                     }}]),
+                      begin
+                          Conf = config(?FUNCTION_NAME,
+                                        Length,
+                                        Bytes,
+                                        SingleActive,
+                                        DeliveryLimit),
+                          ?FORALL(O, ?LET(Ops, log_gen(Size), expand(Ops, Conf)),
+                                  collect({log_size, length(O)},
+                                          different_nodes_prop(Config2, Conf, O)))
+                      end)
+      end, [], Size),
+
+    rabbit_ct_helpers:run_teardown_steps(
+      Config2,
+      rabbit_ct_client_helpers:teardown_steps() ++
+      rabbit_ct_broker_helpers:teardown_steps()).
+
 max_length(_Config) ->
     %% tests that max length is never transgressed
     Size = 1000,
@@ -1451,6 +1483,23 @@ single_active_prop(Conf0, Commands, ValidateOrder) ->
         Err ->
             ct:pal("Commands: ~tp~nConf~tp~n", [Commands, Conf]),
             ct:pal("Err: ~tp~n", [Err]),
+            false
+    end.
+
+different_nodes_prop(Config, Conf0, Commands) ->
+    Conf = Conf0#{release_cursor_interval => 100},
+    Indexes = lists:seq(1, length(Commands)),
+    Entries = lists:zip(Indexes, Commands),
+    InitState = test_init(Conf),
+
+    {StateNode0, _Effs0} = rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, run_log, [InitState, Entries]),
+    {StateNode1, _Effs1} = rabbit_ct_broker_helpers:rpc(Config, 1, ?MODULE, run_log, [InitState, Entries]),
+    case StateNode0 of
+        StateNode1 ->
+            true;
+        _ ->
+            ct:pal("state on node 0:~n~p~nstate on node 1:~n~p",
+                   [StateNode0, StateNode1]),
             false
     end.
 
