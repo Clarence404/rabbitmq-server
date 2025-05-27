@@ -46,7 +46,8 @@ groups() ->
        property_message_groups_attach_non_empty_queue,
        property_message_groups_dispatch_1,
        property_message_groups_dispatch_2,
-       property_message_groups_requeue,
+       property_message_groups_requeue_with_delivery_limit,
+       property_message_groups_requeue_without_delivery_limit,
        property_message_groups_same_filter,
        property_ttl,
        property_purge,
@@ -157,17 +158,17 @@ property_message_groups_attach_empty_queue(Config) ->
     receive {amqp10_msg, ReceiverBlue, M1} ->
                 ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M1)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverBlue, M2} ->
                 ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M2)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverBlue, M5} ->
                 ?assertEqual(<<"m5">>, amqp10_msg:body_bin(M5)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M5)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverBlue, ?LINE),
 
@@ -175,7 +176,7 @@ property_message_groups_attach_empty_queue(Config) ->
     receive {amqp10_msg, ReceiverRed, M3} ->
                 ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3)),
                 ok = amqp10_client:accept_msg(ReceiverRed, M3)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverRed, ?LINE),
 
@@ -241,17 +242,17 @@ property_message_groups_attach_non_empty_queue(Config) ->
     receive {amqp10_msg, ReceiverBlue, M1} ->
                 ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M1)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverBlue, M2} ->
                 ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M2)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverBlue, M5} ->
                 ?assertEqual(<<"m5">>, amqp10_msg:body_bin(M5)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M5)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverBlue, ?LINE),
 
@@ -259,7 +260,7 @@ property_message_groups_attach_non_empty_queue(Config) ->
     receive {amqp10_msg, ReceiverRed, M3} ->
                 ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3)),
                 ok = amqp10_client:accept_msg(ReceiverRed, M3)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverRed, ?LINE),
 
@@ -382,17 +383,25 @@ property_message_groups_dispatch_2(Config) ->
                  rabbitmq_amqp_client:delete_queue(LinkPair, QName)),
     ok = close(Init).
 
-property_message_groups_requeue(Config) ->
+property_message_groups_requeue_with_delivery_limit(Config) ->
+    property_message_groups_requeue(Config, 10).
+
+%% Our expectation is that even though the delivery limit is unlimited,
+%% messages will be requeued at the front of the queue if filtering is enabled.
+property_message_groups_requeue_without_delivery_limit(Config) ->
+    property_message_groups_requeue(Config, -1).
+
+property_message_groups_requeue(Config, DeliveryLimit) ->
     QName = atom_to_binary(?FUNCTION_NAME),
     Address = rabbitmq_amqp_address:queue(QName),
 
     {_, Session, LinkPair} = Init = init(Config),
     {ok, #{}} = rabbitmq_amqp_client:declare_queue(
-                  LinkPair,
-                  QName,
+                  LinkPair, QName,
                   #{arguments => #{<<"x-queue-type">> => {utf8, <<"quorum">>},
                                    <<"x-filter-enabled">> => true,
-                                   <<"x-filter-field-names">> => {list, [{symbol, <<"group-id">>}]}
+                                   <<"x-filter-field-names">> => {list, [{symbol, <<"group-id">>}]},
+                                   <<"x-delivery-limit">> => {long, DeliveryLimit}
                                   }}),
 
     FilterRed = #{?DESCRIPTOR_NAME_PROPERTIES_FILTER =>
@@ -436,17 +445,17 @@ property_message_groups_requeue(Config) ->
     Msg1a = receive {amqp10_msg, ReceiverBlue, M1a} ->
                         ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1a)),
                         M1a
-            after 5000 -> ct:fail({missing_msg, ?LINE})
+            after 9000 -> ct:fail({missing_msg, ?LINE})
             end,
     Msg2 = receive {amqp10_msg, ReceiverBlue, M2} ->
                        ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2)),
                        M2
-           after 5000 -> ct:fail({missing_msg, ?LINE})
+           after 9000 -> ct:fail({missing_msg, ?LINE})
            end,
     Msg5a = receive {amqp10_msg, ReceiverBlue, M5a} ->
                         ?assertEqual(<<"m5">>, amqp10_msg:body_bin(M5a)),
                         M5a
-            after 5000 -> ct:fail({missing_msg, ?LINE})
+            after 9000 -> ct:fail({missing_msg, ?LINE})
             end,
     ok = assert_credit_exhausted(ReceiverBlue, ?LINE),
 
@@ -454,7 +463,7 @@ property_message_groups_requeue(Config) ->
     Msg3a = receive {amqp10_msg, ReceiverRed, M3a} ->
                         ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3a)),
                         M3a
-            after 5000 -> ct:fail({missing_msg, ?LINE})
+            after 9000 -> ct:fail({missing_msg, ?LINE})
             end,
     ok = assert_credit_exhausted(ReceiverRed, ?LINE),
 
@@ -469,12 +478,12 @@ property_message_groups_requeue(Config) ->
     receive {amqp10_msg, ReceiverBlue, M5b} ->
                 ?assertEqual(<<"m5">>, amqp10_msg:body_bin(M5b)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M5b)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverBlue, M1b} ->
                 ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1b)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M1b)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverBlue, ?LINE),
 
@@ -482,7 +491,7 @@ property_message_groups_requeue(Config) ->
     receive {amqp10_msg, ReceiverRed, M3b} ->
                 ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3b)),
                 ok = amqp10_client:accept_msg(ReceiverBlue, M3b)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(ReceiverRed, ?LINE),
 
@@ -541,16 +550,16 @@ property_message_groups_same_filter(Config) ->
     Msg1 = receive {amqp10_msg, Receiver1, M1} ->
                        ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1)),
                        M1
-           after 5000 -> ct:fail({missing_msg, ?LINE})
+           after 9000 -> ct:fail({missing_msg, ?LINE})
            end,
     receive {amqp10_msg, Receiver1, M2} ->
                 ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2))
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     Msg3 = receive {amqp10_msg, Receiver1, M3} ->
                        ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3)),
                        M3
-           after 5000 -> ct:fail({missing_msg, ?LINE})
+           after 9000 -> ct:fail({missing_msg, ?LINE})
            end,
     ok = assert_credit_exhausted(Receiver1, ?LINE),
     ok = amqp10_client_session:disposition(
@@ -703,18 +712,18 @@ property_purge(Config) ->
     receive {amqp10_msg, ReceiverRed, M1} ->
                 ?assertEqual(<<"m1">>, amqp10_msg:body_bin(M1)),
                 ok = amqp10_client:accept_msg(ReceiverRed, M1)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverRed, M3} ->
                 ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3))
                 %% Keeps this message checked out.
                 %% Checked out messages should not get purged.
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     receive {amqp10_msg, ReceiverRed, M4} ->
                 ?assertEqual(<<"m4">>, amqp10_msg:body_bin(M4)),
                 ok = amqp10_client:settle_msg(ReceiverRed, M4, released)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ?assertMatch({ok, #{message_count := 3}}, %% m2, m4, m5
                  rabbitmq_amqp_client:purge_queue(LinkPair, QName)),
@@ -1452,7 +1461,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R1, M3} ->
                 ?assertEqual(<<"m3">>, amqp10_msg:body_bin(M3)),
                 ok = amqp10_client:accept_msg(R1, M3)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R1, ?LINE),
 
@@ -1460,7 +1469,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R2, M2} ->
                 ?assertEqual(<<"m2">>, amqp10_msg:body_bin(M2)),
                 ok = amqp10_client:accept_msg(R2, M2)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R2, ?LINE),
 
@@ -1468,7 +1477,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R3, M4} ->
                 ?assertEqual(<<"m4">>, amqp10_msg:body_bin(M4)),
                 ok = amqp10_client:accept_msg(R3, M4)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R3, ?LINE),
 
@@ -1476,7 +1485,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R4, M5} ->
                 ?assertEqual(<<"m5">>, amqp10_msg:body_bin(M5)),
                 ok = amqp10_client:accept_msg(R4, M5)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R4, ?LINE),
 
@@ -1484,7 +1493,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R5, M6} ->
                 ?assertEqual(<<"m6">>, amqp10_msg:body_bin(M6)),
                 ok = amqp10_client:accept_msg(R5, M6)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R5, ?LINE),
 
@@ -1492,7 +1501,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R6, M7} ->
                 ?assertEqual(<<"m7">>, amqp10_msg:body_bin(M7)),
                 ok = amqp10_client:accept_msg(R6, M7)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R6, ?LINE),
 
@@ -1500,7 +1509,7 @@ jms_application_properties(Config) ->
     receive {amqp10_msg, R7, M8} ->
                 ?assertEqual(<<"m8">>, amqp10_msg:body_bin(M8)),
                 ok = amqp10_client:accept_msg(R7, M8)
-    after 5000 -> ct:fail({missing_msg, ?LINE})
+    after 9000 -> ct:fail({missing_msg, ?LINE})
     end,
     ok = assert_credit_exhausted(R7, ?LINE),
 

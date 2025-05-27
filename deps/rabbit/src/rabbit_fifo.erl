@@ -359,8 +359,6 @@ apply(#{index := Idx} = Meta,
             %% and update acquired count before adding it to the message queue
             Header = update_header(acquired_count, fun incr/1, 1, Header0),
             State0 = add_bytes_return(Header, State00),
-            %%TODO support filtering here?
-            %% This whole #requeue{} will probably go away with log compaction?
             Con = Con0#consumer{checked_out = maps:remove(MsgId, Checked0),
                                 credit = increase_credit(Con0, 1)},
             State1 = State0#?STATE{ra_indexes = rabbit_fifo_index:delete(OldIdx,
@@ -1078,7 +1076,8 @@ handle_aux(_RaftState, cast, {#return{msg_ids = MsgIds,
                                       consumer_key = Key} = Ret, Corr, Pid},
            Aux0, RaAux0) ->
     case ra_aux:machine_state(RaAux0) of
-        #?STATE{cfg = #cfg{delivery_limit = undefined},
+        #?STATE{cfg = #cfg{delivery_limit = undefined,
+                           filter_enabled = false},
                 consumers = Consumers} ->
             case find_consumer(Key, Consumers) of
                 {ConsumerKey, #consumer{checked_out = Checked}} ->
@@ -1103,7 +1102,9 @@ handle_aux(_RaftState, cast, {#return{msg_ids = MsgIds,
                     {no_reply, Aux0, RaAux0}
             end;
         _ ->
-            %% for returns with a delivery limit set we can just return as before
+            %% Return the message to the head of the queue if:
+            %% * delivery limit is set, or
+            %% * filtering is enabled since log compaction is then also enabled
             {no_reply, Aux0, RaAux0, [{append, Ret, {notify, Corr, Pid}}]}
     end;
 handle_aux(leader, _, {handle_tick, [QName, Overview0, Nodes]},
