@@ -1152,8 +1152,11 @@ write_message(MsgId, Msg, CRef,
               end, CRef, State1)
     end.
 
-remove_message(MsgId, CRef, State = #msstate{
-        index_ets = IndexEts, current_file = CurrentFile }) ->
+remove_message(MsgId, CRef,
+               State = #msstate{
+                        index_ets = IndexEts,
+                        current_file = CurrentFile,
+                        current_file_removes = Removes }) ->
     case should_mask_action(CRef, MsgId, State) of
         {true, _Location} ->
             State;
@@ -1340,15 +1343,16 @@ write_large_message(MsgId, MsgBodyBin,
                      current_file        = NextFile,
                      current_file_offset = 0 }.
 
-cleanup_index_on_roll_over(State = #msstate{ index_ets = IndexEts,
-        current_file = CurrentFile, current_file_removes = Removes}) ->
+cleanup_index_on_roll_over(State = #msstate{
+                           index_ets = IndexEts,
+                           current_file_removes = Removes}) ->
     lists:foreach(fun(Entry) ->
         %% We delete objects that have ref_count=0. If a message
         %% got its ref_count increased, it will not be deleted.
         %% We thus avoid extra index lookups to check for ref_count.
         index_delete_object(IndexEts, Entry)
     end, Removes),
-    State=#msstate{current_file_removes=[]}.
+    State#msstate{current_file_removes=[]}.
 
 contains_message(MsgId, From, State = #msstate{ index_ets = IndexEts }) ->
     MsgLocation = index_lookup_positive_ref_count(IndexEts, MsgId),
@@ -2150,9 +2154,9 @@ truncate_file(File, Size, ThresholdTimestamp, #gc_state{ file_summary_ets = File
 
 -spec delete_file(non_neg_integer(), gc_state()) -> ok | defer.
 
-delete_file(File, State = #gc_state { file_summary_ets = FileSummaryEts,
-                                      file_handles_ets = FileHandlesEts,
-                                      dir              = Dir }) ->
+delete_file(File, #gc_state { file_summary_ets = FileSummaryEts,
+                              file_handles_ets = FileHandlesEts,
+                              dir              = Dir }) ->
     case ets:match_object(FileHandlesEts, {{'_', File}, '_'}, 1) of
         {[_|_], _Cont} ->
             rabbit_log:debug("Asked to delete file ~p but it has active readers. Deferring.",
