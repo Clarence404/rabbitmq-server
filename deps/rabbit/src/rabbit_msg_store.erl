@@ -1674,7 +1674,7 @@ index_update(IndexEts, Obj) ->
     ok.
 
 index_update_fields(IndexEts, Key, Updates) ->
-    true = ets:update_element(IndexEts, Key, Updates),
+    _ = ets:update_element(IndexEts, Key, Updates),
     ok.
 
 index_update_ref_counter(IndexEts, Key, RefCount) ->
