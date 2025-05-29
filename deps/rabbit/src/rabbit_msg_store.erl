@@ -1998,10 +1998,21 @@ delete_file_if_empty(File, State = #msstate {
 %% We do not try to look at messages that are not the last because we do not want to
 %% accidentally write over messages that were moved earlier.
 
-compact_file(File, State = #gc_state { index_ets        = IndexEts,
-                                       file_summary_ets = FileSummaryEts,
-                                       dir              = Dir,
-                                       msg_store        = Server }) ->
+compact_file(File, State = #gc_state { file_summary_ets = FileSummaryEts }) ->
+    case ets:lookup(FileSummaryEts, File) of
+        [] ->
+            rabbit_log:debug("File ~tp has already been deleted; no need to compact",
+                             [File]),
+            ok;
+        [#file_summary{file_size = FileSize}] ->
+            compact_file(File, FileSize, State)
+    end.
+
+compact_file(File, FileSize,
+             State = #gc_state { index_ets        = IndexEts,
+                                 file_summary_ets = FileSummaryEts,
+                                 dir              = Dir,
+                                 msg_store        = Server }) ->
     %% Get metadata about the file. Will be used to calculate
     %% how much data was reclaimed as a result of compaction.
     [#file_summary{file_size = FileSize}] = ets:lookup(FileSummaryEts, File),
